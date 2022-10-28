@@ -54,6 +54,11 @@ CHIP_ERROR ESP32FactoryDataProvider::GetSpake2pIterationCount(uint32_t & iterati
     return ESP32Config::ReadConfigValue(ESP32Config::kConfigKey_Spake2pIterationCount, iterationCount);
 }
 
+CHIP_ERROR ESP32FactoryDataProvider::GetSetupPasscode(uint32_t & setupPasscode)
+{
+    return ESP32Config::ReadConfigValue(ESP32Config::kConfigKey_SetupPinCode, setupPasscode);
+}
+
 CHIP_ERROR ESP32FactoryDataProvider::GetSpake2pSalt(MutableByteSpan & saltBuf)
 {
     static constexpr size_t kSpake2pSalt_MaxBase64Len = BASE64_ENCODED_LEN(chip::Crypto::kSpake2p_Max_PBKDF_Salt_Length) + 1;
@@ -77,7 +82,7 @@ CHIP_ERROR ESP32FactoryDataProvider::GetSpake2pSalt(MutableByteSpan & saltBuf)
 CHIP_ERROR ESP32FactoryDataProvider::GetSpake2pVerifier(MutableByteSpan & verifierBuf, size_t & verifierLen)
 {
     static constexpr size_t kSpake2pSerializedVerifier_MaxBase64Len =
-        BASE64_ENCODED_LEN(chip::Crypto::kSpake2p_VerifierSerialized_Length) + 1;
+        BASE64_ENCODED_LEN(chip::Crypto::kSpake2p_VerifierSerialized_Length) + 2;
 
     CHIP_ERROR err                                            = CHIP_NO_ERROR;
     char verifierB64[kSpake2pSerializedVerifier_MaxBase64Len] = { 0 };
