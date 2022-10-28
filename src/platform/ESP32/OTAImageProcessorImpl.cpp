@@ -19,6 +19,12 @@
 #include <app/clusters/ota-requestor/OTARequestorInterface.h>
 #include <platform/CHIPDeviceEvent.h>
 #include <platform/ESP32/ESP32Utils.h>
+#include <crypto/CHIPCryptoPAL.h>
+
+#include <lib/support/CodeUtils.h>
+#include <lib/support/ScopedBuffer.h>
+#include <lib/support/Span.h>
+#include <stdlib.h>
 
 #include "OTAImageProcessorImpl.h"
 #include "esp_err.h"
@@ -26,10 +32,17 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "lib/core/CHIPError.h"
+extern "C"
+{
+    #include "arch_flash.h"
+}
 
 #define TAG "OTAImageProcessor"
-using namespace chip::System;
+#define OTA_IMAGE_CERT_SIGN_MAX_SIZE 1024
+
+using namespace ::chip::System;
 using namespace ::chip::DeviceLayer::Internal;
+using namespace ::chip::Crypto;
 
 namespace chip {
 namespace {
@@ -146,6 +159,33 @@ void OTAImageProcessorImpl::HandlePrepareDownload(intptr_t context)
         return;
     }
     imageProcessor->mHeaderParser.Init();
+    imageProcessor->paiParams.verifyComplete = false;
+    imageProcessor->paiParams.verifySuccess = false;
+    imageProcessor->paiParams.isLastBlock = false;
+    imageProcessor->mVerifyParams.hashStream.Clear();
+    imageProcessor->mVerifyParams.hashStream.Begin();
+    imageProcessor->mVerifyParams.ota_ext_buffer_index = 0;
+    if(imageProcessor->paiParams.paiderBuf != nullptr)
+    {
+        chip::Platform::MemoryFree(imageProcessor->paiParams.paiderBuf);
+        imageProcessor->paiParams.paiderBufLen = 0;
+        imageProcessor->paiParams.paiderBuf    = nullptr;
+    }
+
+    if (imageProcessor->mVerifyParams.ota_ext_buffer.size() < OTA_IMAGE_CERT_SIGN_MAX_SIZE * 2)
+    {
+        if (!imageProcessor->mVerifyParams.ota_ext_buffer.empty())
+        {
+            imageProcessor->ReleaseBlock();
+        }
+        uint8_t * mBlock_ptr = static_cast<uint8_t *>(chip::Platform::MemoryAlloc(OTA_IMAGE_CERT_SIGN_MAX_SIZE * 2));
+        if (mBlock_ptr == nullptr)
+        {
+            return;
+        }
+        imageProcessor->mVerifyParams.ota_ext_buffer = MutableByteSpan(mBlock_ptr, OTA_IMAGE_CERT_SIGN_MAX_SIZE * 2);
+    }
+
     imageProcessor->mDownloader->OnPreparedForDownload(CHIP_NO_ERROR);
     PostOTAStateChangeEvent(DeviceLayer::kOtaDownloadInProgress);
 }
@@ -218,6 +258,21 @@ void OTAImageProcessorImpl::HandleProcessBlock(intptr_t context)
         return;
     }
 
+    if(imageProcessor->mParams.totalFileBytes - imageProcessor->mParams.downloadedBytes - block.size() >= OTA_IMAGE_CERT_SIGN_MAX_SIZE)
+    {
+        imageProcessor->mVerifyParams.hashStream.AddData(block);
+    }
+    else
+    {
+        error = AppendSpanToMutableSpan(block, block.size(), imageProcessor->mVerifyParams.ota_ext_buffer, imageProcessor->mVerifyParams.ota_ext_buffer_index);
+        if (error != CHIP_NO_ERROR)
+        {
+            ChipLogError(SoftwareUpdate, "Cannot copy block data: %" CHIP_ERROR_FORMAT, error.Format());
+            return;
+        }
+        imageProcessor->mVerifyParams.ota_ext_buffer_index += block.size();
+    }
+
     esp_err_t err = esp_ota_write(imageProcessor->mOTAUpdateHandle, block.data(), block.size());
     if (err != ESP_OK)
     {
@@ -227,7 +282,101 @@ void OTAImageProcessorImpl::HandleProcessBlock(intptr_t context)
         return;
     }
     imageProcessor->mParams.downloadedBytes += block.size();
-    imageProcessor->mDownloader->FetchNextData();
+    if(imageProcessor->paiParams.isLastBlock == false)
+    {
+        imageProcessor->mDownloader->FetchNextData();
+    }
+    else
+    {
+        if(imageProcessor->HandleImageSignatureVerify() == false)
+        {
+            imageProcessor->paiParams.verifyComplete = true;
+            imageProcessor->paiParams.verifySuccess = false;
+            ChipLogError(SoftwareUpdate, "Image signature verify failed");
+        }
+        else
+        {
+            imageProcessor->paiParams.verifyComplete = true;
+            imageProcessor->paiParams.verifySuccess = true;
+            ChipLogProgress(SoftwareUpdate, "Image signature verify success");
+        }
+        imageProcessor->mDownloader->SendBlockAck();
+    }
+}
+
+bool OTAImageProcessorImpl::HandleImageSignatureVerify()
+{
+    CHIP_ERROR err = CHIP_NO_ERROR;
+    auto * imageProcessor = this;
+    uint8_t md[kSHA256_Hash_Length];
+    MutableByteSpan messageDigestSpan(md);
+
+    ByteSpan imageExtLastBuffer;
+    ByteSpan imageCertPemBuffer;
+    ByteSpan imageSignBuffer;
+
+    mVerifyParams.ota_ext_buffer.reduce_size(mVerifyParams.ota_ext_buffer_index + 1);
+    uint8_t * mBlock_ptr = mVerifyParams.ota_ext_buffer.data();
+
+    uint8_t * certBeginIndex = NULL;
+    uint8_t * certEndIndex = NULL;
+    uint8_t * signBeginIndex = NULL;
+    if(findCertBeginIndex(mBlock_ptr, mVerifyParams.ota_ext_buffer_index, &certBeginIndex) != MIIO_OK)
+    {
+        ChipLogError(SoftwareUpdate, "cannot find cert");
+        err = CHIP_ERROR_INTERNAL;
+        SuccessOrExit(err);
+    }
+    if(findCertEndIndex(mBlock_ptr, mVerifyParams.ota_ext_buffer_index, &certEndIndex, &signBeginIndex) != MIIO_OK)
+    {
+        ChipLogError(SoftwareUpdate, "cannot find cert and sign");
+        err = CHIP_ERROR_INTERNAL;
+        SuccessOrExit(err);
+    }
+
+    imageExtLastBuffer = mVerifyParams.ota_ext_buffer.SubSpan(0, (size_t)(certBeginIndex - mBlock_ptr));
+    imageCertPemBuffer = mVerifyParams.ota_ext_buffer.SubSpan((size_t)(certBeginIndex - mBlock_ptr), (size_t)(certEndIndex - certBeginIndex + 1));
+    imageSignBuffer = mVerifyParams.ota_ext_buffer.SubSpan((size_t)(signBeginIndex - mBlock_ptr));
+
+    err = imageProcessor->mVerifyParams.hashStream.AddData(imageExtLastBuffer);
+    err = imageProcessor->mVerifyParams.hashStream.Finish(messageDigestSpan);
+
+    Crypto::CertificateChainValidationResult chainValidationResult;
+    err = ValidateCertificateChain(imageProcessor->paiParams.paiderBuf, imageProcessor->paiParams.paiderBufLen, NULL, 0,
+                                            imageCertPemBuffer.data(), imageCertPemBuffer.size(),
+                                            chainValidationResult);
+    if(chainValidationResult != Crypto::CertificateChainValidationResult::kSuccess)
+    {
+        ChipLogError(SoftwareUpdate, "cert chain validation failed");
+    }
+    ChipLogProgress(SoftwareUpdate, "cert chain validation success");
+
+    SuccessOrExit(err);
+
+    Crypto::SignatureValidationResult signValidationResult;
+    err = ValidateSignatureWithCertificate(imageCertPemBuffer.data() , imageCertPemBuffer.size(), messageDigestSpan.data(),
+                                    messageDigestSpan.size(), imageSignBuffer.data(), imageSignBuffer.size(),
+                                    signValidationResult);
+    if(signValidationResult != Crypto::SignatureValidationResult::kSuccess)
+    {
+        ChipLogError(SoftwareUpdate, "sign validation failed");
+        err = CHIP_ERROR_INTERNAL;
+    }
+    ChipLogProgress(SoftwareUpdate, "sign validation success");
+    SuccessOrExit(err);
+
+exit:
+    imageProcessor->mVerifyParams.hashStream.Clear();
+    chip::Platform::MemoryFree(imageProcessor->paiParams.paiderBuf);
+
+    if(err != CHIP_NO_ERROR)
+    {
+        return false;
+    }
+    else
+    {
+        return true;
+    }
 }
 
 void OTAImageProcessorImpl::HandleApply(intptr_t context)
@@ -285,6 +434,13 @@ CHIP_ERROR OTAImageProcessorImpl::ReleaseBlock()
         Platform::MemoryFree(mBlock.data());
     }
     mBlock = MutableByteSpan();
+
+    if (mVerifyParams.ota_ext_buffer.data() != nullptr)
+    {
+        chip::Platform::MemoryFree(mVerifyParams.ota_ext_buffer.data());
+    }
+    mVerifyParams.ota_ext_buffer = MutableByteSpan();
+
     return CHIP_NO_ERROR;
 }
 

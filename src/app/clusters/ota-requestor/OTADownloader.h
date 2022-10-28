@@ -63,6 +63,8 @@ public:
     // Fetch the next set of data. May be a no-op for asynchronous protocols.
     CHIP_ERROR virtual FetchNextData() { return CHIP_ERROR_NOT_IMPLEMENTED; }
 
+    CHIP_ERROR virtual SendBlockAck() { return CHIP_ERROR_NOT_IMPLEMENTED; }
+
     // Skip ahead some number of bytes in the download of the image file. May not be supported by some transport protocols.
     CHIP_ERROR virtual SkipData(uint32_t numBytes) { return CHIP_ERROR_NOT_IMPLEMENTED; }
 

@@ -76,6 +76,8 @@ static_library("ESP32") {
     sources += [
       "OTAImageProcessorImpl.cpp",
       "OTAImageProcessorImpl.h",
+      "arch_flash.c",
+      "arch_flash.h",
     ]
   }
 

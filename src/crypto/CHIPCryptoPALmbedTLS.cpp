@@ -1391,6 +1391,54 @@ exit:
     return error;
 }
 
+CHIP_ERROR ValidateSignatureWithCertificate(const uint8_t * Certificate, size_t CertificateLen, const uint8_t * hash,
+                                    size_t hashLen, const uint8_t * sign, size_t signLen,
+                                    SignatureValidationResult & result)
+{
+#if defined(MBEDTLS_X509_CRT_PARSE_C)
+    CHIP_ERROR error = CHIP_NO_ERROR;
+    mbedtls_x509_crt device_cert;
+    int mbedResult;
+
+    result = SignatureValidationResult::kInternalFrameworkError;
+
+    VerifyOrReturnError(Certificate != nullptr && CertificateLen != 0,
+                        (result = SignatureValidationResult::kCertArgumentInvalid, CHIP_ERROR_INVALID_ARGUMENT));
+
+    VerifyOrReturnError(hash != nullptr && hashLen != 0,
+                        (result = SignatureValidationResult::kHashArgumentInvalid, CHIP_ERROR_INVALID_ARGUMENT));
+
+    VerifyOrReturnError(sign != nullptr && signLen != 0,
+                        (result = SignatureValidationResult::kSignatureArgumentInvalid, CHIP_ERROR_INVALID_ARGUMENT));
+
+	mbedtls_x509_crt_init( &device_cert );
+
+    mbedResult = mbedtls_x509_crt_parse(&device_cert, Uint8::to_const_uchar(Certificate), CertificateLen);
+    mbedtls_x509_crt *cert_ptr = &device_cert;
+    VerifyOrExit(mbedResult == 0, (result = SignatureValidationResult::kCertFormatInvalid, error = CHIP_ERROR_INTERNAL));
+
+    mbedResult = mbedtls_pk_verify(&cert_ptr->pk, MBEDTLS_MD_SHA256, hash, hashLen, sign, signLen);
+    VerifyOrExit(mbedResult == 0, (result = SignatureValidationResult::kSignatureVerifyFailed, error = CHIP_ERROR_INTERNAL));
+
+    result = SignatureValidationResult::kSuccess;
+
+exit:
+    _log_mbedTLS_error(mbedResult);
+    mbedtls_x509_crt_free(&device_cert);
+#else
+    (void) Certificate;
+    (void) CertificateLen;
+    (void) hash;
+    (void) hashLen;
+    (void) sign;
+    (void) signLen;
+    (void) result;
+    CHIP_ERROR error = CHIP_ERROR_NOT_IMPLEMENTED;
+#endif // defined(MBEDTLS_X509_CRT_PARSE_C)
+
+    return error;
+}
+
 CHIP_ERROR IsCertificateValidAtIssuance(const ByteSpan & candidateCertificate, const ByteSpan & issuerCertificate)
 {
 #if defined(MBEDTLS_X509_CRT_PARSE_C)

@@ -29,6 +29,11 @@
 #include <system/SystemPacketBuffer.h>
 #include <transport/raw/MessageHeader.h>
 
+#include <credentials/CHIPCert.h>
+#include <credentials/CertificationDeclaration.h>
+#include <credentials/DeviceAttestationConstructor.h>
+#include <credentials/DeviceAttestationCredsProvider.h>
+
 using chip::OTADownloader;
 using chip::app::Clusters::OtaSoftwareUpdateRequestor::OTAChangeReasonEnum;
 using chip::app::DataModel::Nullable;
@@ -159,6 +164,15 @@ CHIP_ERROR BDXDownloader::FetchNextData()
     return CHIP_NO_ERROR;
 }
 
+CHIP_ERROR BDXDownloader::SendBlockAck()
+{
+    VerifyOrReturnError(mState == State::kInProgress, CHIP_ERROR_INCORRECT_STATE);
+    ReturnErrorOnFailure(mBdxTransfer.PrepareBlockAck());
+    PollTransferSession();
+
+    return CHIP_NO_ERROR;
+}
+
 void BDXDownloader::OnDownloadTimeout()
 {
     Reset();
@@ -259,19 +273,49 @@ CHIP_ERROR BDXDownloader::HandleBdxEvent(const chip::bdx::TransferSession::Outpu
             Reset();
 
             // BDX transfer is not complete until BlockAckEOF has been sent
-            SetState(State::kComplete, OTAChangeReasonEnum::kSuccess);
+            if((mImageProcessor->paiParams.verifyComplete == true) && (mImageProcessor->paiParams.verifySuccess == true))
+            {
+                SetState(State::kComplete, OTAChangeReasonEnum::kSuccess);
+            }
+            else
+            {
+                SetState(State::kIdle, OTAChangeReasonEnum::kFailure);
+            }
         }
         break;
     }
     case TransferSession::OutputEventType::kBlockReceived: {
         chip::ByteSpan blockData(outEvent.blockdata.Data, outEvent.blockdata.Length);
+        if (outEvent.blockdata.IsEof)
+        {
+            // get pai der format cert
+            uint8_t paiderBuf[Credentials::kMaxDERCertLength];
+            MutableByteSpan derBufSpan(paiderBuf);
+
+            Credentials::DeviceAttestationCredentialsProvider * dacProvider = Credentials::GetDeviceAttestationCredentialsProvider();
+
+            dacProvider->GetProductAttestationIntermediateCert(derBufSpan);
+
+            if (mImageProcessor->paiParams.paiderBuf == nullptr)
+            {
+                mImageProcessor->paiParams.paiderBuf = static_cast<uint8_t *>(chip::Platform::MemoryAlloc(derBufSpan.size()));
+            }
+            VerifyOrReturnError(mImageProcessor->paiParams.paiderBuf != nullptr, CHIP_ERROR_NO_MEMORY);
+            mImageProcessor->paiParams.paiderBufLen = static_cast<uint16_t>(derBufSpan.size());
+            memcpy(mImageProcessor->paiParams.paiderBuf, derBufSpan.data(), mImageProcessor->paiParams.paiderBufLen);
+
+            // set isLastBlock
+            mImageProcessor->paiParams.isLastBlock = true;
+        }
         ReturnErrorOnFailure(mImageProcessor->ProcessBlock(blockData));
         mStateDelegate->OnUpdateProgressChanged(mImageProcessor->GetPercentComplete());
 
         // TODO: this will cause problems if Finalize() is not guaranteed to do its work after ProcessBlock().
         if (outEvent.blockdata.IsEof)
         {
-            mBdxTransfer.PrepareBlockAck();
+            // move to block process end
+            // mBdxTransfer.PrepareBlockAck();
+
             ReturnErrorOnFailure(mImageProcessor->Finalize());
         }
 

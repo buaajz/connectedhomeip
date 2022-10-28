@@ -22,8 +22,17 @@
 #include <lib/core/OTAImageHeader.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/OTAImageProcessor.h>
+#include <crypto/CHIPCryptoPAL.h>
 
 namespace chip {
+
+struct OTAVerifyParams
+{
+    Crypto::Hash_SHA256_stream hashStream;
+    Crypto::P256Keypair * OTACertKeypair = nullptr;
+    MutableByteSpan ota_ext_buffer;
+    size_t ota_ext_buffer_index = 0;
+};
 
 class OTAImageProcessorImpl : public OTAImageProcessorInterface
 {
@@ -37,6 +46,7 @@ public:
     void SetOTADownloader(OTADownloader * downloader) { mDownloader = downloader; };
     bool IsFirstImageRun() override;
     CHIP_ERROR ConfirmCurrentImage() override;
+    bool HandleImageSignatureVerify() override;
 
 private:
     static void HandlePrepareDownload(intptr_t context);
@@ -54,6 +64,7 @@ private:
     const esp_partition_t * mOTAUpdatePartition = nullptr;
     esp_ota_handle_t mOTAUpdateHandle;
     OTAImageHeaderParser mHeaderParser;
+    OTAVerifyParams mVerifyParams;
 };
 
 } // namespace chip

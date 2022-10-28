@@ -1432,6 +1432,24 @@ enum class CertificateChainValidationResult
     kInternalFrameworkError = 600,
 };
 
+enum class SignatureValidationResult
+{
+    kSuccess = 0,
+
+    kCertFormatInvalid   = 100,
+    kCertArgumentInvalid = 101,
+
+    kHashArgumentInvalid = 200,
+
+    kSignatureArgumentInvalid = 300,
+
+    kSignatureVerifyFailed = 400,
+
+    kNoMemory = 500,
+
+    kInternalFrameworkError = 600,
+};
+
 CHIP_ERROR ValidateCertificateChain(const uint8_t * rootCertificate, size_t rootCertificateLen, const uint8_t * caCertificate,
                                     size_t caCertificateLen, const uint8_t * leafCertificate, size_t leafCertificateLen,
                                     CertificateChainValidationResult & result);
@@ -1477,6 +1495,10 @@ CHIP_ERROR ExtractSKIDFromX509Cert(const ByteSpan & certificate, MutableByteSpan
  * @brief Extracts the Authority Key Identifier from an X509 Certificate.
  **/
 CHIP_ERROR ExtractAKIDFromX509Cert(const ByteSpan & certificate, MutableByteSpan & akid);
+
+CHIP_ERROR ValidateSignatureWithCertificate(const uint8_t * Certificate, size_t CertificateLen, const uint8_t * hash,
+                                    size_t hashLen, const uint8_t * sign, size_t signLen,
+                                    SignatureValidationResult & result);
 
 /**
  * Defines DN attribute types that can include endocing of VID/PID parameters.

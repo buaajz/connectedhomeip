@@ -73,6 +73,7 @@ public:
     // instead.
     void EndDownload(CHIP_ERROR reason = CHIP_NO_ERROR) override;
     CHIP_ERROR FetchNextData() override;
+    CHIP_ERROR SendBlockAck() override;
     // TODO: override SkipData
 
     System::Clock::Timeout GetTimeout();

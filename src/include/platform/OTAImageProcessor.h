@@ -32,6 +32,15 @@ struct OTAImageProgress
     uint64_t totalFileBytes  = 0;
 };
 
+struct OTAPaiParams
+{
+    uint8_t * paiderBuf = nullptr;
+    size_t paiderBufLen = 0;
+    bool isLastBlock = false;
+    bool verifyComplete = false;
+    bool verifySuccess = false;
+};
+
 /**
  * @class OTAImageProcessorInterface
  *
@@ -100,6 +109,10 @@ public:
      * a software update.
      */
     virtual CHIP_ERROR ConfirmCurrentImage() = 0;
+
+    virtual bool HandleImageSignatureVerify() = 0;
+
+    OTAPaiParams paiParams;
 
 protected:
     OTAImageProgress mParams;
