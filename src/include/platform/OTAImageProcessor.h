@@ -39,6 +39,8 @@ struct OTAPaiParams
     bool isLastBlock = false;
     bool verifyComplete = false;
     bool verifySuccess = false;
+    uint16_t vendorid = 0;
+    uint16_t productid = 0;
 };
 
 /**

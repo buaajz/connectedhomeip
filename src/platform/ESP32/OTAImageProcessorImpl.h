@@ -32,6 +32,9 @@ struct OTAVerifyParams
     Crypto::P256Keypair * OTACertKeypair = nullptr;
     MutableByteSpan ota_ext_buffer;
     size_t ota_ext_buffer_index = 0;
+    OTAImageDigestType mImageDigestType;
+    MutableByteSpan mImageDigest;
+    Crypto::Hash_SHA256_stream headerHashStream;
 };
 
 class OTAImageProcessorImpl : public OTAImageProcessorInterface
@@ -57,6 +60,7 @@ private:
 
     CHIP_ERROR SetBlock(ByteSpan & block);
     CHIP_ERROR ReleaseBlock();
+    CHIP_ERROR ReleaseHeaderBlock();
     CHIP_ERROR ProcessHeader(ByteSpan & block);
 
     OTADownloader * mDownloader = nullptr;

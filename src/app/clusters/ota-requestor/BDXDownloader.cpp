@@ -33,6 +33,7 @@
 #include <credentials/CertificationDeclaration.h>
 #include <credentials/DeviceAttestationConstructor.h>
 #include <credentials/DeviceAttestationCredsProvider.h>
+#include <platform/DeviceInstanceInfoProvider.h>
 
 using chip::OTADownloader;
 using chip::app::Clusters::OtaSoftwareUpdateRequestor::OTAChangeReasonEnum;
@@ -303,6 +304,19 @@ CHIP_ERROR BDXDownloader::HandleBdxEvent(const chip::bdx::TransferSession::Outpu
             VerifyOrReturnError(mImageProcessor->paiParams.paiderBuf != nullptr, CHIP_ERROR_NO_MEMORY);
             mImageProcessor->paiParams.paiderBufLen = static_cast<uint16_t>(derBufSpan.size());
             memcpy(mImageProcessor->paiParams.paiderBuf, derBufSpan.data(), mImageProcessor->paiParams.paiderBufLen);
+
+            // get PID and VID
+            uint16_t vid,pid;
+            if (DeviceLayer::GetDeviceInstanceInfoProvider()->GetVendorId(vid) != CHIP_NO_ERROR)
+            {
+                ChipLogDetail(BDX, "Vendor ID not known");
+            }
+            mImageProcessor->paiParams.vendorid = vid;
+            if (DeviceLayer::GetDeviceInstanceInfoProvider()->GetProductId(pid) != CHIP_NO_ERROR)
+            {
+                ChipLogDetail(BDX, "Prodoct ID not known");
+            }
+            mImageProcessor->paiParams.productid = pid;
 
             // set isLastBlock
             mImageProcessor->paiParams.isLastBlock = true;

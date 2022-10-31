@@ -164,6 +164,8 @@ void OTAImageProcessorImpl::HandlePrepareDownload(intptr_t context)
     imageProcessor->paiParams.isLastBlock = false;
     imageProcessor->mVerifyParams.hashStream.Clear();
     imageProcessor->mVerifyParams.hashStream.Begin();
+    imageProcessor->mVerifyParams.headerHashStream.Clear();
+    imageProcessor->mVerifyParams.headerHashStream.Begin();
     imageProcessor->mVerifyParams.ota_ext_buffer_index = 0;
     if(imageProcessor->paiParams.paiderBuf != nullptr)
     {
@@ -273,6 +275,7 @@ void OTAImageProcessorImpl::HandleProcessBlock(intptr_t context)
         imageProcessor->mVerifyParams.ota_ext_buffer_index += block.size();
     }
 
+    imageProcessor->mVerifyParams.headerHashStream.AddData(block);
     esp_err_t err = esp_ota_write(imageProcessor->mOTAUpdateHandle, block.data(), block.size());
     if (err != ESP_OK)
     {
@@ -309,7 +312,10 @@ bool OTAImageProcessorImpl::HandleImageSignatureVerify()
     CHIP_ERROR err = CHIP_NO_ERROR;
     auto * imageProcessor = this;
     uint8_t md[kSHA256_Hash_Length];
+    uint8_t mdHeader[kSHA256_Hash_Length];
     MutableByteSpan messageDigestSpan(md);
+    MutableByteSpan messageHeaderDigestSpan(mdHeader);
+    AttestationCertVidPid vidpid;
 
     ByteSpan imageExtLastBuffer;
     ByteSpan imageCertPemBuffer;
@@ -341,6 +347,27 @@ bool OTAImageProcessorImpl::HandleImageSignatureVerify()
     err = imageProcessor->mVerifyParams.hashStream.AddData(imageExtLastBuffer);
     err = imageProcessor->mVerifyParams.hashStream.Finish(messageDigestSpan);
 
+    // 1.Validate PID and VID
+    err = ExtractVIDPIDFromX509Cert(imageCertPemBuffer, vidpid);
+    if(!((imageProcessor->paiParams.vendorid == vidpid.mVendorId.Value()) && (imageProcessor->paiParams.productid == vidpid.mProductId.Value())))
+    {
+        ChipLogError(SoftwareUpdate, "vid and pid validation failed");
+        err = CHIP_ERROR_INTERNAL;
+        SuccessOrExit(err);
+    }
+    ChipLogProgress(SoftwareUpdate, "vid and pid validation success");
+
+    // 2.Validate Header HashStream
+    err = imageProcessor->mVerifyParams.headerHashStream.Finish(messageHeaderDigestSpan);
+    if(!mVerifyParams.mImageDigest.data_equal(messageHeaderDigestSpan))
+    {
+        ChipLogError(SoftwareUpdate, "hash stream validation failed");
+        err = CHIP_ERROR_INTERNAL;
+        SuccessOrExit(err);
+    }
+    ChipLogProgress(SoftwareUpdate, "hash stream validation success");
+
+    // 3.Validate Certificate Cert Chain
     Crypto::CertificateChainValidationResult chainValidationResult;
     err = ValidateCertificateChain(imageProcessor->paiParams.paiderBuf, imageProcessor->paiParams.paiderBufLen, NULL, 0,
                                             imageCertPemBuffer.data(), imageCertPemBuffer.size(),
@@ -353,6 +380,7 @@ bool OTAImageProcessorImpl::HandleImageSignatureVerify()
 
     SuccessOrExit(err);
 
+    // 4.Validate Signature With Certificate
     Crypto::SignatureValidationResult signValidationResult;
     err = ValidateSignatureWithCertificate(imageCertPemBuffer.data() , imageCertPemBuffer.size(), messageDigestSpan.data(),
                                     messageDigestSpan.size(), imageSignBuffer.data(), imageSignBuffer.size(),
@@ -367,6 +395,7 @@ bool OTAImageProcessorImpl::HandleImageSignatureVerify()
 
 exit:
     imageProcessor->mVerifyParams.hashStream.Clear();
+    imageProcessor->mVerifyParams.headerHashStream.Clear();
     chip::Platform::MemoryFree(imageProcessor->paiParams.paiderBuf);
 
     if(err != CHIP_NO_ERROR)
@@ -444,6 +473,17 @@ CHIP_ERROR OTAImageProcessorImpl::ReleaseBlock()
     return CHIP_NO_ERROR;
 }
 
+CHIP_ERROR OTAImageProcessorImpl::ReleaseHeaderBlock()
+{
+    if (mVerifyParams.mImageDigest.data() != nullptr)
+    {
+        chip::Platform::MemoryFree(mVerifyParams.mImageDigest.data());
+    }
+    mVerifyParams.mImageDigest = MutableByteSpan();
+
+    return CHIP_NO_ERROR;
+}
+
 CHIP_ERROR OTAImageProcessorImpl::ProcessHeader(ByteSpan & block)
 {
     if (mHeaderParser.IsInitialized())
@@ -456,6 +496,34 @@ CHIP_ERROR OTAImageProcessorImpl::ProcessHeader(ByteSpan & block)
         ReturnErrorOnFailure(error);
 
         mParams.totalFileBytes = header.mPayloadSize;
+        mVerifyParams.mImageDigestType = header.mImageDigestType;
+        if(mVerifyParams.mImageDigestType != OTAImageDigestType::kSha256)
+        {
+            ChipLogError(SoftwareUpdate, "invaild OTA image digestType, only support Sha256");
+            return CHIP_ERROR_INTERNAL;
+        }
+
+        if (mVerifyParams.mImageDigest.size() < header.mImageDigest.size())
+        {
+            if (!mVerifyParams.mImageDigest.empty())
+            {
+                ReleaseHeaderBlock();
+            }
+            uint8_t * mBlock_ptr = static_cast<uint8_t *>(chip::Platform::MemoryAlloc(header.mImageDigest.size()));
+            if (mBlock_ptr == nullptr)
+            {
+                return CHIP_ERROR_NO_MEMORY;
+            }
+            mVerifyParams.mImageDigest = MutableByteSpan(mBlock_ptr, header.mImageDigest.size());
+        }
+
+        CHIP_ERROR err = CopySpanToMutableSpan(header.mImageDigest, mVerifyParams.mImageDigest);
+        if (err != CHIP_NO_ERROR)
+        {
+            ChipLogError(SoftwareUpdate, "Cannot copy block data: %" CHIP_ERROR_FORMAT, err.Format());
+            return err;
+        }
+
         mHeaderParser.Clear();
     }
 
